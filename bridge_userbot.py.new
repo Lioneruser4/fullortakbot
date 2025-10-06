@@ -1,0 +1,176 @@
+import asyncio
+import logging
+import os
+from telethon import TelegramClient, events
+from telethon.tl.types import InputPeerUser
+from config import (
+    API_ID,
+    API_HASH,
+    BOT_TOKEN,
+    DOWNLOAD_TIMEOUT,
+    DOWNLOADER_BOT_USERNAME,
+    DAILY_DOWNLOAD_LIMIT,
+    OWNER_ID
+)
+from utils import TempFileManager, BotError, logger
+from database import Database
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize userbot client
+userbot = TelegramClient('userbot_session', API_ID, API_HASH)
+
+# Database connection
+db = Database()
+
+# Track download status
+download_tasks = {}
+
+async def init_bot():
+    """Initialize and start the userbot."""
+    try:
+        await TempFileManager.create_temp_dir()
+        logger.info("Starting userbot...")
+        await userbot.start()
+        logger.info("Userbot started successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error starting userbot: {str(e)}")
+        return False
+
+async def cleanup():
+    """Clean up resources and stop the userbot."""
+    try:
+        await TempFileManager.cleanup_temp_files()
+        if userbot.is_connected():
+            await userbot.disconnect()
+        logger.info("Userbot stopped")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
+
+async def download_audio(query: str, user_id: int) -> str:
+    """
+    Search for music, download the first result, and return the file path.
+    
+    Args:
+        query: Song name or YouTube URL
+        user_id: ID of the user making the request
+        
+    Returns:
+        str: Path to the downloaded audio file
+    """
+    try:
+        # Check if user has download credits
+        if not await db.can_download(user_id):
+            raise BotError("Daily download limit reached")
+        
+        # Connect to the downloader bot
+        bot_entity = await userbot.get_entity(DOWNLOADER_BOT_USERNAME)
+        
+        # Start the download process
+        async with userbot.conversation(bot_entity, timeout=DOWNLOAD_TIMEOUT) as conv:
+            # Send search query
+            await conv.send_message(query)
+            
+            # Get first response (search results or download start)
+            try:
+                response = await conv.get_response(timeout=10)
+                
+                # Check for errors
+                if any(keyword in response.text.lower() for keyword in ['not found', 'error', 'hata', 'bulunamadı']):
+                    raise BotError("No results found. Please try a different search term.")
+                
+                # If options are shown, select the first one (usually #1)
+                if any(char in response.text for char in ['1', '2', '3', '4', '5']):
+                    await conv.send_message('1')
+                    response = await conv.get_response(timeout=10)
+                
+                # Wait for download to start
+                response = await conv.get_response(timeout=30)
+                
+                # Wait for the music file (max 3 attempts)
+                max_attempts = 3
+                attempts = 0
+                
+                while attempts < max_attempts:
+                    if hasattr(response, 'media') and response.media:
+                        # Download the file
+                        temp_file = await TempFileManager.generate_temp_filename(extension='mp3')
+                        await userbot.download_media(response.media, file=temp_file)
+                        
+                        # Verify file size
+                        if os.path.exists(temp_file) and os.path.getsize(temp_file) > 1024:  # > 1KB
+                            # Update download count
+                            await db.increment_download_count(user_id)
+                            
+                            # Add to download history
+                            file_name = f"{getattr(response, 'file', {}).get('name', 'downloaded_song')}.mp3"
+                            await db.add_to_history(user_id, file_name)
+                            
+                            return temp_file
+                        
+                        # Remove invalid file
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    
+                    # Get next message
+                    try:
+                        response = await conv.get_response(timeout=30)
+                    except asyncio.TimeoutError:
+                        break
+                        
+                    attempts += 1
+                
+                raise BotError("Could not download the music file. Please try again later.")
+                
+            except asyncio.TimeoutError:
+                raise BotError("Operation timed out. Please try again.")
+            
+    except Exception as e:
+        logger.error(f"Error downloading music: {str(e)}", exc_info=True)
+        if not isinstance(e, BotError):
+            raise BotError(f"An error occurred: {str(e)}")
+        raise
+
+@userbot.on(events.NewMessage(incoming=True, from_users=OWNER_ID))
+async def handle_owner_message(event):
+    """Handle messages from the bot owner."""
+    try:
+        if event.message.text.startswith('/'):
+            command = event.message.text.split()[0].lower()
+            
+            if command == '/stats':
+                # Show statistics
+                stats = await db.get_download_stats(event.sender_id)
+                await event.reply(f"Daily downloads: {stats[0]}/{DAILY_DOWNLOAD_LIMIT}")
+                
+            elif command == '/premium' and len(event.message.text.split()) > 2:
+                # Update premium status
+                try:
+                    user_id = int(event.message.text.split()[1])
+                    status = event.message.text.split()[2].lower() == 'true'
+                    await db.set_premium_status(user_id, status)
+                    await event.reply(f"Premium status updated: {status}")
+                except (IndexError, ValueError):
+                    await event.reply("Usage: /premium <user_id> <true/false>")
+    except Exception as e:
+        logger.error(f"Error handling owner command: {e}")
+        await event.reply(f"An error occurred: {e}")
+
+async def main():
+    """Main application loop."""
+    try:
+        if await init_bot():
+            logger.info("Bot is running. Press Ctrl+C to exit.")
+            await userbot.run_until_disconnected()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    finally:
+        await cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())

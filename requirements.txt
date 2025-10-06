@@ -1,0 +1,7 @@
+python-dotenv==1.0.0
+aiogram==2.25.1
+telethon==1.28.5
+pytz==2023.3
+python-decouple==3.8
+aiofiles==23.1.0
+aiosqlite==0.19.0
