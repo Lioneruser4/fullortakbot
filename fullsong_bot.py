@@ -16,7 +16,14 @@ from utils import TempFileManager, BotError, is_valid_url, format_file_size, log
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
-db = Database()
+
+# Veritabanı bağlantısını oluştur
+try:
+    db = Database()
+    logger.info("Veritabanı bağlantısı başlatıldı")
+except Exception as e:
+    logger.error(f"Veritabanı bağlantı hatası: {str(e)}")
+    raise
 
 # Durumlar
 class DownloadStates(StatesGroup):
@@ -227,20 +234,43 @@ async def on_startup(dp):
 
 async def on_shutdown(dp):
     """Bot kapatıldığında çalışır."""
-    await TempFileManager.cleanup_temp_files()
-    await bot.send_message(OWNER_ID, "👋 Bot kapatılıyor...")
-    logger.info("Bot kapatılıyor...")
+    try:
+        # Veritabanı bağlantısını kapat
+        await db.close()
+        logger.info("Veritabanı bağlantısı kapatıldı")
+        
+        # Bot'u kapat
+        await bot.close()
+        await dp.storage.close()
+        await dp.storage.wait_closed()
+        logger.info("Bot başarıyla kapatıldı")
+    except Exception as e:
+        logger.error(f"Bot kapatılırken hata: {str(e)}")
+        raise
 
 if __name__ == '__main__':
-    # Event loop'u al
-    loop = asyncio.get_event_loop()
-    
     try:
-        # Botu başlat
-        from aiogram import executor
-        executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown, skip_updates=True)
+        # Event loop'u al
+        loop = asyncio.get_event_loop()
+        
+        # Bot'u başlat
+        logger.info("Bot başlatılıyor...")
+        executor.start_polling(dp, 
+                            skip_updates=True,
+                            on_startup=on_startup,
+                            on_shutdown=on_shutdown)
+    except KeyboardInterrupt:
+        logger.info("Bot kullanıcı tarafından durduruldu")
     except Exception as e:
-        logger.error(f"Bot çalışırken hata oluştu: {e}")
+        logger.error(f"Bot çalışırken beklenmeyen hata: {str(e)}")
     finally:
-        # Tüm asenkron görevleri kapat
-        loop.close()
+        # Tüm bekleyen görevleri iptal et
+        try:
+            loop = asyncio.get_event_loop()
+            pending = asyncio.all_tasks(loop=loop)
+            for task in pending:
+                task.cancel()
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+        except Exception as e:
+            logger.error(f"Loop kapatılırken hata: {str(e)}")
