@@ -38,59 +38,35 @@ async def delete_temp_file(file_path: str):
     """Geçici dosyayı siler."""
     try:
         if os.path.exists(file_path):
-            os.remove(file_path)
             logger.info(f"Geçici dosya silindi: {file_path}")
     except Exception as e:
         logger.error(f"Dosya silinirken hata: {e}")
 
 # Komut işleyicileri
-@dp.message_handler(commands=['start', 'help'])
-async def send_welcome(message: types.Message):
-    """Başlangıç mesajını gösterir."""
-    welcome_text = (
-        "🎵 <b>FullSong Bot'a Hoş Geldiniz!</b> 🎵\n\n"
-        "Bu bot ile müzikleri kolayca indirebilirsiniz.\n"
-        "Sadece bana bir YouTube/Spotify/Deezer linki veya şarkı adı gönderin.\n\n"
-        "<b>Komutlar:</b>\n"
-        "/start - Bu yardım mesajını gösterir\n"
-        "/download - Müzik indirmek için link ister\n"
-        "/stats - İndirme istatistiklerinizi gösterir\n"
-        "/premium - Premium bilgileri gösterir"
-    )
-    
-    # Kullanıcıyı veritabanına ekle
-    await db.add_user(message.from_user.id)
-    
-    await message.answer(welcome_text)
-
-@dp.message_handler(commands=['song'], chat_type=[types.ChatType.GROUP, types.ChatType.SUPERGROUP])
-async def request_song(message: types.Message):
-    """Grupta şarkı indirme komutunu işler."""
-    # Komuttan sonra gelen metni al
-    args = message.get_args()
-    if not args:
-        await message.reply(
-            "🎵 Kullanım: /song <şarkı adı veya YouTube linki>\n"
-            "Örnek: /song Daft Punk - Get Lucky"
-        )
-        return
-    
-    # Kullanıcıyı doğrudan işleme yönlendir
-    await process_song_request(message, args)
-    
-@dp.message_handler(chat_type=[types.ChatType.PRIVATE])
-async def private_chat_handler(message: types.Message):
-    """Özel sohbetlerde sadece bilgi mesajı gösterir."""
-    await message.answer(
-        "ℹ️ Bu bot sadece gruplarda çalışmaktadır.\n"
-        "Herhangi bir gruba ekleyip /song komutunu kullanabilirsiniz."
-    )
+@dp.message_handler(chat_type=types.ChatType.PRIVATE, content_types=types.ContentTypes.TEXT)
+async def private_chat_handler(message: types.Message, state: FSMContext):
+    """Handles private chat messages."""
+    # Eğer mesaj bir komut değilse, doğrudan işleme al
+    # If the message is not a command, redirect it to the music download process
+    if not message.text.startswith('/'):
+        await process_music_request(message, message.text)
+    else:
+        # If the message is a command, handle it accordingly
+        if message.text.startswith('/song'):
+            args = message.get_args()
+            if args:
+                await process_music_request(message, args)
+            else:
+                await message.answer(
+                    "Usage: /song <song name or YouTube link>\n"
+                    "Example: /song Daft Punk - Get Lucky"
+                )
 
 @dp.message_handler(state=DownloadStates.waiting_for_link)
 async def process_music_request(message: types.Message, state: FSMContext):
-    """Kullanıcının gönderdiği müzik isteğini işler (link veya şarkı adı)."""
+    """Handles user's music request (link or song name)."""
     user_input = message.text.strip()
-    user_id = message.from_user.id
+{{ ... }}
     
     # Kullanıcının indirme hakkı var mı kontrol et
     if not await db.can_download(user_id):
